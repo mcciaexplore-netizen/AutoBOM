@@ -1,0 +1,5 @@
+{
+  "name": "AutoBOM",
+  "description": "An AI-powered Bill of Materials and Bill of Quantities generator. Upload your rate list and project drawings to instantly create detailed cost estimates.",
+  "requestFramePermissions": []
+}
