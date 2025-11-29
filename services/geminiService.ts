@@ -92,14 +92,15 @@ export const generateBOM = async (
   if (provider === 'gemini') {
     return generateGeminiBOM(apiKey, base64Files, systemPrompt);
   } else {
-    // Pass the model from settings, or default fallback
-    const model = settings.groqModel || "llama-3.2-11b-vision-preview";
+    // Pass the model from settings, or default fallback to 90b vision
+    const model = settings.groqModel || "llama-3.2-90b-vision-preview";
     return generateGroqBOM(apiKey, model, base64Files, systemPrompt);
   }
 };
 
 // --- GEMINI IMPLEMENTATION ---
 async function generateGeminiBOM(apiKey: string, files: {data: string, mimeType: string}[], prompt: string): Promise<BOMResult> {
+  // STRICTLY use the user provided apiKey. No process.env fallback.
   const ai = new GoogleGenAI({ apiKey });
 
   const fileParts = files.map(f => ({
@@ -161,8 +162,12 @@ async function generateGeminiBOM(apiKey: string, files: {data: string, mimeType:
 
     return JSON.parse(text) as BOMResult;
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini Error:", error);
+    // Enhance error message for common API key issues
+    if (error.message?.includes('API key') || error.status === 403) {
+      throw new Error("Invalid Gemini API Key. Please check your settings.");
+    }
     throw error;
   }
 }
@@ -170,19 +175,29 @@ async function generateGeminiBOM(apiKey: string, files: {data: string, mimeType:
 // --- GROQ IMPLEMENTATION ---
 async function generateGroqBOM(apiKey: string, model: string, files: {data: string, mimeType: string}[], prompt: string): Promise<BOMResult> {
   try {
-    // Construct messages for OpenAI-compatible endpoint
+    let contentPayload: any;
+
+    if (files.length > 0) {
+      // Vision Model requires array of objects
+      contentPayload = [
+        { type: "text", text: prompt },
+        ...files.map(f => ({
+          type: "image_url",
+          image_url: {
+            url: `data:${f.mimeType};base64,${f.data}`,
+          },
+        })),
+      ];
+    } else {
+      // Text-only requires simple string to avoid "messages[0].content must be a string" error
+      // This is crucial for non-vision models or strict API validation when no images are present
+      contentPayload = prompt;
+    }
+
     const messages = [
       {
         role: "user",
-        content: [
-          { type: "text", text: prompt },
-          ...files.map(f => ({
-            type: "image_url",
-            image_url: {
-              url: `data:${f.mimeType};base64,${f.data}`,
-            },
-          })),
-        ],
+        content: contentPayload,
       },
     ];
 
@@ -203,7 +218,14 @@ async function generateGroqBOM(apiKey: string, model: string, files: {data: stri
 
     if (!response.ok) {
       const err = await response.json();
-      throw new Error(`Groq API Error: ${err.error?.message || response.statusText}`);
+      const errorMessage = err.error?.message || response.statusText;
+      console.error("Groq API Error Detail:", err);
+      
+      if (errorMessage.includes("must be a string")) {
+         throw new Error("Groq API Error: Message content format issue. Try removing images or switching models.");
+      }
+      
+      throw new Error(`Groq API Error: ${errorMessage}`);
     }
 
     const data = await response.json();
