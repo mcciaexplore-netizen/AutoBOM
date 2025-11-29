@@ -8,8 +8,8 @@ export const generateBOM = async (
   userApiKey?: string
 ): Promise<BOMResult> => {
   
-  // Use user provided key, fallback to env var, or throw error
-  const apiKey = userApiKey || process.env.API_KEY || "";
+  // Strictly use user provided key
+  const apiKey = userApiKey?.trim();
   
   if (!apiKey) {
     throw new Error("API Key is missing. Please add your API Key in Settings.");
