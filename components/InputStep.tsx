@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Image as ImageIcon, X, FileText, FileType, Sparkles } from 'lucide-react';
+import { Upload, Image as ImageIcon, X, FileText, Sparkles } from 'lucide-react';
 
 interface InputStepProps {
   projectDescription: string;
@@ -43,7 +43,7 @@ const InputStep: React.FC<InputStepProps> = ({
 
   const getFileIcon = (file: File) => {
     if (file.type.includes('pdf')) {
-      return <FileType size={32} className="text-red-500" />;
+      return <FileText size={32} className="text-red-500" />;
     }
     return <ImageIcon size={32} className="text-blue-500" />;
   };

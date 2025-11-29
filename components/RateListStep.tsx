@@ -3,7 +3,7 @@ import { FileText, Database, Upload, AlertCircle, Info } from 'lucide-react';
 
 interface RateListStepProps {
   rateList: string;
-  setRateList: (val: string) => void;
+  setRateList: React.Dispatch<React.SetStateAction<string>>;
   onNext: () => void;
 }
 
