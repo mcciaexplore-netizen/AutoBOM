@@ -1,3 +1,4 @@
+
 export interface RateItem {
   id: string;
   name: string;
@@ -31,8 +32,13 @@ export interface BOMResult {
   notes?: string;
 }
 
+export type AIProvider = 'gemini' | 'groq';
+
 export interface AppSettings {
-  apiKey: string;
+  provider: AIProvider;
+  geminiApiKey: string;
+  groqApiKey: string;
+  groqModel: string;
   businessName: string;
   businessAddress: string;
   businessContact: string;

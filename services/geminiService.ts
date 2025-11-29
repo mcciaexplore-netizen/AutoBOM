@@ -1,36 +1,32 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { BOMResult } from "../types";
+import { BOMResult, AppSettings } from "../types";
 
 export const generateBOM = async (
   rateListText: string,
   projectDescription: string,
   files: File[],
-  userApiKey?: string
+  settings: AppSettings
 ): Promise<BOMResult> => {
   
-  // Strictly use user provided key
-  const apiKey = userApiKey?.trim();
+  const provider = settings.provider;
+  const apiKey = provider === 'gemini' ? settings.geminiApiKey : settings.groqApiKey;
   
-  if (!apiKey) {
-    throw new Error("API Key is missing. Please add your API Key in Settings.");
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error(`${provider === 'gemini' ? 'Gemini' : 'Groq'} API Key is missing. Please add your API Key in Settings.`);
   }
 
-  // Initialize client dynamically with the specific key
-  const ai = new GoogleGenAI({ apiKey });
-
-  const fileParts = await Promise.all(
+  const base64Files = await Promise.all(
     files.map(async (file) => {
       const base64Data = await fileToGenerativePart(file);
       return {
-        inlineData: {
-          data: base64Data,
-          mimeType: file.type,
-        },
+        data: base64Data,
+        mimeType: file.type,
       };
     })
   );
 
-  const prompt = `
+  const systemPrompt = `
     You are an expert Quantity Surveyor and Estimator for industrial assembly projects (e.g., Aluminum Profile Guarding, Conveyors, Automation).
     
     **Task**: Create a highly detailed Bill of Materials (BOM) & Cost Estimate from the provided drawings and rate list.
@@ -65,9 +61,53 @@ export const generateBOM = async (
     """
 
     **Output Structure**:
-    Return a JSON object with 'metadata' and 'items'.
+    Return a strictly valid JSON object (no markdown, no extra text) with 'metadata' and 'items'.
     Currency should be "INR".
+    
+    JSON Schema:
+    {
+      "metadata": {
+        "projectName": "string",
+        "drawingNumber": "string",
+        "client": "string",
+        "date": "string",
+        "totalWeight": "string"
+      },
+      "items": [
+        {
+          "category": "string (Numbered Category)",
+          "item": "string (Item Name)",
+          "description": "string (Technical specs)",
+          "unit": "string (m, sq.m, nos, kg)",
+          "quantity": number,
+          "rate": number,
+          "amount": number
+        }
+      ],
+      "totalCost": number,
+      "currency": "string"
+    }
   `;
+
+  if (provider === 'gemini') {
+    return generateGeminiBOM(apiKey, base64Files, systemPrompt);
+  } else {
+    // Pass the model from settings, or default fallback
+    const model = settings.groqModel || "llama-3.2-11b-vision-preview";
+    return generateGroqBOM(apiKey, model, base64Files, systemPrompt);
+  }
+};
+
+// --- GEMINI IMPLEMENTATION ---
+async function generateGeminiBOM(apiKey: string, files: {data: string, mimeType: string}[], prompt: string): Promise<BOMResult> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  const fileParts = files.map(f => ({
+    inlineData: {
+      data: f.data,
+      mimeType: f.mimeType,
+    },
+  }));
 
   try {
     const response = await ai.models.generateContent({
@@ -98,13 +138,13 @@ export const generateBOM = async (
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  category: { type: Type.STRING, description: "Numbered Category (e.g., '1. Aluminum Profiles')" },
+                  category: { type: Type.STRING, description: "Numbered Category" },
                   item: { type: Type.STRING, description: "Item Name" },
-                  description: { type: Type.STRING, description: "Technical specs, cut length (mm), or sub-assembly ref" },
-                  unit: { type: Type.STRING, description: "Unit (m, sq.m, nos, kg)" },
-                  quantity: { type: Type.NUMBER, description: "Billable Quantity (e.g. Total Meters)" },
-                  rate: { type: Type.NUMBER, description: "Unit Rate in INR" },
-                  amount: { type: Type.NUMBER, description: "Total Cost in INR" },
+                  description: { type: Type.STRING, description: "Technical specs" },
+                  unit: { type: Type.STRING, description: "Unit" },
+                  quantity: { type: Type.NUMBER, description: "Billable Quantity" },
+                  rate: { type: Type.NUMBER, description: "Unit Rate" },
+                  amount: { type: Type.NUMBER, description: "Total Cost" },
                 },
                 required: ["category", "item", "quantity", "rate", "amount", "unit", "description"],
               },
@@ -117,16 +157,67 @@ export const generateBOM = async (
     });
 
     const text = response.text;
-    if (!text) throw new Error("No response from AI");
+    if (!text) throw new Error("No response from Gemini");
 
-    const result = JSON.parse(text) as BOMResult;
-    return result;
+    return JSON.parse(text) as BOMResult;
 
   } catch (error) {
-    console.error("Error generating BOM:", error);
+    console.error("Gemini Error:", error);
     throw error;
   }
-};
+}
+
+// --- GROQ IMPLEMENTATION ---
+async function generateGroqBOM(apiKey: string, model: string, files: {data: string, mimeType: string}[], prompt: string): Promise<BOMResult> {
+  try {
+    // Construct messages for OpenAI-compatible endpoint
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          ...files.map(f => ({
+            type: "image_url",
+            image_url: {
+              url: `data:${f.mimeType};base64,${f.data}`,
+            },
+          })),
+        ],
+      },
+    ];
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messages: messages,
+        model: model, 
+        temperature: 0.1,
+        max_tokens: 8000,
+        response_format: { type: "json_object" }
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(`Groq API Error: ${err.error?.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content;
+
+    if (!content) throw new Error("No content returned from Groq");
+
+    return JSON.parse(content) as BOMResult;
+
+  } catch (error) {
+    console.error("Groq Error:", error);
+    throw error;
+  }
+}
 
 async function fileToGenerativePart(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
